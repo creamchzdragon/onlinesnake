@@ -56,21 +56,26 @@ class ConnectionManager:
 		connection.settimeout(self.timeout)
 		self.millis[id] = int(round(time.time()*1000))
 		self.connections[id]["active"] = True
+		running_msg = b''
 		while self.run and self.connections[id]["active"]:
 			try:
 				data = connection.recv(1024)
+				data = running_msg + data
+				running_msg = b''
 				msgs = data.split(end_of_msg_word)
-				for msg in msgs:
-					if msg == b'':
+				for i in range(len(msgs)):
+					if msgs[i] == b'':
 						continue
-					if msg == b'pong':
+					if msgs[i] == b'pong':
 						ping_sent = False
 						cur_millis = int(round(time.time()*1000))
 						self.connections[id]["ping"] = cur_millis - self.millis[id]
 						logging.info("Leg between server and " + str(id) + ":" + str(cur_millis - self.millis[id]))
 					else:
-						self.connections[id]["msgs"].append(msg)
-						self.server_callback(msg,id)
+						if (i == (len(msgs) - 1)):
+							running_msg = msgs[i]
+						else: 
+							self.server_callback(msgs[i],id)
 			except timeout:
 				if ping_sent:
 					self.connections[id]["active"] = False
@@ -109,18 +114,24 @@ class ConnectionManager:
 		logging.info("Listening for server messages.")
 		self.run = True
 		self.client_sock_active = True
+		running_msg = b''
 		while self.run and self.client_sock_active:
 			try:
 				data = sock.recv(1024)
+				data = running_msg + data
+				running_msg = b''
 				msgs = data.split(end_of_msg_word)
-				for msg in msgs:
-					if msg == b'':
+				for i in range(len(msgs)):
+					if msgs[i] == b'':
 						continue
-					if msg == b'ping':
+					if msgs[i] == b'ping':
 						logging.info("Sending Pong To Server")
 						sock.send(b'pong' + end_of_msg_word)
 					else:
-						self.client_callback(msg)
+						if (i == (len(msgs) - 1)):
+							running_msg = msgs[i]
+						else: 
+							self.client_callback(msgs[i])
 			except timeout:
 				continue
 			except Exception as e:
