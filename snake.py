@@ -274,12 +274,12 @@ class Snake:
 	def grow(self):
 		self.squares.insert(0,self.squares[0] + self.direction)
 	#list of lists to list of vec2
-	def set_pos(self,pos):
+	def set_pos_from_array(self,pos):
 		self.squares = []
 		for p in pos:
 			self.squares.append(pygame.math.Vector2(p[0],p[1]))
 	#string dir to vec2 dir
-	def set_dir(self,dir):
+	def set_dir_from_string(self,dir):
 		if dir == "up":
 			self.direction = up
 		elif dir == "down":
@@ -288,6 +288,21 @@ class Snake:
 			self.direction = left
 		elif dir == "right":
 			self.direction = right
+	def get_pos_as_array(self):
+		out = []
+		for p in self.squares:
+			out.append([p.x,p.y])
+		return out
+	def get_dir_as_string(self):
+		if self.direction == up:
+			return "up"
+		elif self.direction == down:
+			return "down"
+		elif self.direction == left:
+			return "left"
+		elif self.direction == right:
+			return "right"
+
 class Food:
 	def __init__(self,g_height,g_width,tiles):
 		self.pos = pygame.math.Vector2(-1,-1)
@@ -323,6 +338,10 @@ class OnlineFood(Food):
 						return
 					else:
 						count += 1
+	def get_pos_as_array(self):
+		return [self.pos.x,self.pos.y]
+	def set_pos_from_array(self,arr):
+		self.pos = pygame.math.Vector2(arr[0],arr[1])
 def draw_grid(surface):
 	global tiles
 	for y in range(GRID_HEIGHT):
@@ -489,7 +508,7 @@ def accept_connection(msg,id):
 	global man
 	msg = msg.decode('utf-8')
 	#check for join tag
-	if msg[:5] == "JOIN:":
+	if msg[:5] == "JOIN:" and len(players) < 4:
 		msg = msg[5:]
 		players.append({"name":msg,"conn_id":id,"color":get_player_color(),"ping":999})
 		man.send_to_client(b'ID:' + bytes(str(id),'utf-8'),id)
@@ -689,6 +708,7 @@ def on_client_msg(msg):
 def online_game_loop(screen,clock,is_server):
 	global players
 	global man
+
 def join_lobby_loop(screen,clock,name,ip):
 	global man
 	global players
