@@ -11,6 +11,7 @@ class ConnectionManager:
 		self.connections = []
 		self.run = False
 		self.connection_id = 0
+		self.raise_exceptions = False
 		format = "%(asctime)s: %(message)s"
 		logging.basicConfig(format=format,level=logging.INFO,datefmt='%H:%M:%S')
 	def start_server(self,host_name,port,callback,n_connections = None,timeout = 5):
@@ -48,6 +49,8 @@ class ConnectionManager:
 			except Exception as e:
 				self.run = False
 				logging.info(e)
+				if self.raise_exceptions:
+					raise e
 		logging.info("Server Stopped.")
 		self.run = False
 		socket.close()
@@ -88,6 +91,8 @@ class ConnectionManager:
 			except Exception as e:
 				logging.info(e)
 				self.connections[id]["active"] = False
+				if self.raise_exceptions:
+					raise e
 		self.connections[id]["active"] = False
 		connection.close()
 	def send_to_client(self,msg,id):
@@ -137,6 +142,8 @@ class ConnectionManager:
 			except Exception as e:
 				self.client_sock_active = False
 				logging.info(e)
+				if self.raise_exceptions:
+					raise e
 		self.client_sock_active = False
 		sock.close()
 	def send_to_server(self,msg):
@@ -162,7 +169,7 @@ class ConnectionManager:
 		return out
 	def join_all_threads(self):
 		self.disconnect()
-		if self.client_thread.isAlive():
+		if hasattr(self,"client_thread") and self.client_thread.isAlive():
 			self.client_thread.join()
 		for i in range(len(self.connections)):
 			if self.connections[i]["thread"].isAlive():

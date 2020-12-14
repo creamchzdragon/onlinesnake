@@ -3,6 +3,7 @@ import random
 import pygame
 import ConnectionManager
 import json
+import logging
 SCREEN_HEIGHT = 480
 SCREEN_WIDTH = 480
 GRID_SQUARE_PIXELS = 20
@@ -13,18 +14,21 @@ GRID_DIM = pygame.math.Vector2(GRID_HEIGHT,GRID_WIDTH)
 ASSETS_DIRECTORY = "./assets/"
 player_colors = ["red","blue","yellow"]
 base_starting_point = pygame.math.Vector2(GRID_WIDTH / 4, GRID_HEIGHT / 4)
-width_mult = pygame.math.Vector2(3, 0)
-hieght_mult = pygame.math.Vector2(0, 3)
-starting_points = [base_starting_point , base_starting_point * width_mult , base_starting_point * hieght_mult , base_starting_point * width_mult * hieght_mult]
+width_mult = pygame.math.Vector2(12, 0)
+hieght_mult = pygame.math.Vector2(0, 12)
+starting_points = [base_starting_point , base_starting_point + width_mult , base_starting_point + hieght_mult , base_starting_point + width_mult + hieght_mult]
 used_player_colors = []
 starting_dirs = ["up","down","left","right"]
 man = ConnectionManager.ConnectionManager()
+man.raise_exceptions = True
 #can use pygame.math.Vector2
 up = pygame.math.Vector2(0,-1)
 down = pygame.math.Vector2(0,1)
 left = pygame.math.Vector2(-1,0)
 right = pygame.math.Vector2(1,0)
 players = []
+client_id = -1
+food = [GRID_HEIGHT / 2, GRID_WIDTH / 2]
 tiles = {
 	"grid": "grid.png",
 	"snake": {
@@ -143,6 +147,7 @@ tiles = {
 	},
 	"food": "food.png"	
 }
+
 def get_player_color():
 	global player_colors
 	global used_player_colors
@@ -183,6 +188,16 @@ class Snake:
 			if((self.squares[0] + self.direction) == self.squares[i]):
 				return False
 		return True
+	def can_online_move(self,snakes):
+		start = self.can_move()
+		if not start:
+			return start
+		for i in range(1,len(snakes)):
+			for sq in snakes[i].squares:
+				if((self.squares[0] + self.direction) == sq or self.squares[0] == sq):
+					return False
+		return True
+
 	def draw_snake(self,surface):
 		#draw head first
 		if(len(self.squares) == 1):
@@ -302,7 +317,6 @@ class Snake:
 			return "left"
 		elif self.direction == right:
 			return "right"
-
 class Food:
 	def __init__(self,g_height,g_width,tiles):
 		self.pos = pygame.math.Vector2(-1,-1)
@@ -324,7 +338,10 @@ class Food:
 		surface.blit(tiles["food"],grid_to_pixels(self.pos))
 class OnlineFood(Food):
 	def place(self,snakes):
-		rand_pos_num = random.randint(0, (self.g_height * self.g_width) - len(snake.squares))
+		sum_of_squares = 0
+		for s in snakes:
+			sum_of_squares += len(s.squares)
+		rand_pos_num = random.randint(0, (self.g_height * self.g_width) - sum_of_squares)
 		count = 0
 		squares = []
 		for s in snakes:
@@ -546,8 +563,6 @@ def send_update():
 	global man
 	players_string = json.dumps(players)
 	man.send_to_all_clients(b'UPDT:' + bytes(players_string,'utf-8'))
-def game_server_callback(msg,id):
-	pass
 def start_game():
 	global players
 	global man
@@ -555,7 +570,8 @@ def start_game():
 		players[i]["pos"] = [[starting_points[i].x,starting_points[i].y]]
 		players[i]["dir"] = random.choice(starting_dirs)
 		players[i]["alive"] = True
-	msg = json.dumps(players)
+	msg = {"players":players,"food": [GRID_WIDTH / 2,GRID_HEIGHT / 2]}
+	msg = json.dumps(msg)
 	man.change_server_callback(game_server_callback)
 	man.send_to_all_clients(b'STRT:' + bytes(msg,'utf-8'))
 def lobby_loop(screen,clock,name):
@@ -690,10 +706,14 @@ def on_client_msg(msg):
 	global players
 	global client_id
 	global start_game
+	global food
 	msg = msg.decode('utf-8')
 	if msg[:5] == "UPDT:":
 		if start_game:
-			pass
+			msg = msg[5:]
+			msg = json.loads(msg)
+			players = msg["players"]
+			food = msg["food"]
 		else:
 			msg = msg[5:]
 			msg = json.loads(msg)
@@ -703,12 +723,123 @@ def on_client_msg(msg):
 	elif msg[:5] == "STRT:":
 		msg = msg[5:]
 		msg = json.loads(msg)
-		players = msg
+		players = msg["players"]
 		start_game = True
+def game_server_callback(msg,id):
+	global man
+	global players
+	global food
+	msg = msg.decode('utf-8')
+	if msg[:5] == "UPDT:":
+		msg = msg[5:]
+		msg = json.loads(msg)
+		for player in players:
+			if player["conn_id"] == id:
+				player["pos"] = msg["pos"]
+				player["dir"] = msg["dir"]
+				player["alive"] = msg["alive"]
+				break
+		rsp = {"players":players,"food":food}
+		rsp = json.dumps(rsp)
+		rsp = bytes(rsp,'utf-8')
+		man.send_to_all_clients(b'UPTD:' + rsp)
 def online_game_loop(screen,clock,is_server):
 	global players
 	global man
-
+	global food
+	global client_id
+	surface = pygame.Surface(screen.get_size())
+	surface = surface.convert()
+	snakes = []
+	for player in players:
+		if player["conn_id"] == client_id:
+			snakes.insert(0,Snake(GRID_WIDTH,GRID_HEIGHT,tiles,player["color"]))
+			snakes[0].set_pos_from_array(player["pos"])
+		else:
+			snakes.append(Snake(GRID_WIDTH,GRID_HEIGHT,tiles,player["color"]))
+			snakes[-1].set_pos_from_array(player["pos"])
+	local_food = OnlineFood(GRID_WIDTH,GRID_HEIGHT,tiles)
+	local_food.set_pos_from_array(food)
+	draw_grid(screen)
+	for snake in snakes:
+		snake.draw_snake(screen)
+	local_food.draw(screen)
+	tick = 0
+	myfont = pygame.font.SysFont("monospace",72)
+	score_font = pygame.font.SysFont("monospace",32)
+	game_over = False
+	score = 0
+	speedup = False
+	while(True):
+		clock.tick(60)
+		speedup = snakes[0].handle_keys(speedup)
+		draw_grid(surface)
+		local_food.set_pos_from_array(food)
+		local_food.draw(surface)
+		#load snakes from players
+		idx = 1
+		for player in players:
+			if player["conn_id"] != client_id:
+				snakes[idx].set_pos_from_array(player["pos"])
+				snakes[idx].set_dir_from_string(player["dir"])
+				idx += 1 
+		for snake in snakes:
+			snake.draw_snake(surface)
+		screen.blit(surface,(0,0))
+		rendered_score = score_font.render("Score: {0}".format(score),1,(255,255,255))
+		screen.blit(rendered_score,(0,0))
+		frames_per_move = 60
+		if(speedup == True):
+			speedup_text = score_font.render("Speedup Active",1,(255,255,255))
+			speedup_text_rect = speedup_text.get_rect(topright = (SCREEN_WIDTH,0))
+			screen.blit(speedup_text,speedup_text_rect)
+			frames_per_move = 30
+		elif(speedup == -1):
+			break
+		if(is_server):
+			#check for food eaten and set its pos if not
+			for snake in snakes:
+				for pos in snake.squares:
+					if pos == local_food.pos:
+						local_food.place(snakes)
+						food = local_food.get_pos_as_array()
+						msg = {"players":players,"food":food}
+						msg = json.dumps(msg)
+						msg = bytes(msg,'utf-8')
+						man.send_to_all_clients(b'UPDT:' + msg)
+		if(game_over):
+			game = myfont.render("Game",1,(255,255,255))
+			over = myfont.render("Over",1,(255,255,255))
+			game_rect = game.get_rect(center = (SCREEN_WIDTH / 2,SCREEN_HEIGHT / 2 - 36))
+			over_rect = over.get_rect(center = (SCREEN_WIDTH / 2,SCREEN_HEIGHT / 2 + 36))
+			screen.blit(game,game_rect)
+			screen.blit(over,over_rect)
+		elif(tick % frames_per_move == 0):
+			if(snake_eat_food(snakes[0],local_food)):
+				snakes[0].grow()
+				score += 1
+			elif(snakes[0].can_online_move(snakes)):
+				snakes[0].move()
+			else:
+				game_over = True
+				players[0]["alive"] = False
+			if is_server:
+				players[0]["pos"] = snakes[0].get_pos_as_array()
+				players[0]["dir"] = snakes[0].get_dir_as_string()
+				msg = {"players":players,"food":food}
+				msg = json.dumps(msg)
+				msg = bytes(msg,'utf-8')
+				man.send_to_all_clients(b'UPDT:' + msg)
+			else:
+				msg = {"pos":snakes[0].get_pos_as_array(),"dir":snakes[0].get_dir_as_string(),"alive":(not game_over)}
+				msg = json.dumps(msg)
+				msg = bytes(msg,'utf-8')
+				man.send_to_server(b'UPDT:' + msg)
+		tick += 1
+		pygame.display.update()
+	man.disconnect()
+	man.join_all_threads()
+	main_menu_scene_loop(screen,clock)
 def join_lobby_loop(screen,clock,name,ip):
 	global man
 	global players
