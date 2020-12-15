@@ -196,6 +196,11 @@ class Snake:
 			for sq in snakes[i].squares:
 				if((self.squares[0] + self.direction) == sq or self.squares[0] == sq):
 					return False
+		for sq1 in self.squares:
+			for i in range(1,len(snakes)):
+				for sq2 in snakes[i].squares:
+					if sq1 == sq2:
+						return False
 		return True
 
 	def draw_snake(self,surface):
