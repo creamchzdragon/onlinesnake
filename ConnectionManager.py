@@ -4,28 +4,180 @@ import threading
 import sys
 import logging
 import time
-special_words = [b'ping',b'pong',b'end',b'\n>>>>']
-end_of_msg_word = b'\n>>>>'
-class ConnectionManager:
-	def __init__(self):
+LEN_OF_TYPE = len(b'XXXX')
+LEN_OF_SIZE = len(b'0x00000000')
+LEN_OF_HEADER = LEN_OF_TYPE + LEN_OF_SIZE
+MAX_LEN_OF_RECV = 4096
+class Message:
+	"""
+	a class that defines a message passed between the the client and server
+	"""
+	def __init__(self,type: str = "XXXX",body: str = ""):
+		global LEN_OF_TYPE
+		"""
+		constructor
+
+		Args:
+			type(str)-The type of the message, 4 characters long.
+			body(str)-The body of the message.
+		Throws:
+			ValueError - If the type is not 4 characters long
+		"""
+		if len(type) != LEN_OF_TYPE:
+			raise ValueError("The length of the type must be 4")
+		self.type = type
+		self.body = body
+	def pack(self):
+		global LEN_OF_SIZE
+		"""
+		This method packs the type,body, and size into a byte string.
+
+		Returns:
+			Byte String - The type, size(length of the body turned into a hex string), and body
+		"""
+		b_body = self.body.encode('utf-8')
+		l = len(b_body)
+		len_hex = hex(l)
+		len_hex = len_hex[:2] + '0' * (LEN_OF_SIZE - len(len_hex)) + len_hex[2:]
+		return self.type.encode('utf-8') + len_hex.encode('utf-8') + b_body
+	def unpack(self,byte_string):
+		global LEN_OF_TYPE
+		global LEN_OF_HEADER
+		"""
+		This method unpacks a byte string into this class.
+		
+		Args:
+			byte_string(Byte str) - The message in byte string for.
+		"""
+		self.type = byte_string[:LEN_OF_TYPE].decode('utf-8')
+		self.body = byte_string[LEN_OF_HEADER:].decode('utf-8')
+def get_size_of_msg(byte_str):
+	global LEN_OF_TYPE
+	"""
+	This method gets the length of a mesage from the header byte string
+
+	Args:
+		byte_str(Byte String) - The header byte string
+
+	Returns:
+		The length in bytes of the message body
+	"""
+	byte_str = byte_str[LEN_OF_TYPE:]
+	return int(byte_str,16)
+def scramble(in_hex):
+	""" This method scrambles the in hex and returns the scrambled hex."""
+	num = int(in_hex,16)
+	num = num ^ 2044882523
+	num = hex(num)
+	return num
+class Client:
+	def __init__(self,address,port,on_connect,on_disconnect,timeout = 1):
+		self.run = False
+		self.connection_id = -1
+		self.raise_exceptions = False
+		self.address = address
+		self.port = port
+		self.on_connect = on_connect
+		self.on_disconnect = on_disconnect
+		self.timeout = timeout
+		self.scramble = True
+		self.type_callbacks = {}
+		format = "%(asctime)s: %(message)s"
+		logging.basicConfig(format=format,level=logging.INFO,datefmt='%H:%M:%S')
+	def connect(self):
+		self.run = True
+		sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+		server_addr = (self.address,self.port)
+		sock.connect(server_addr)
+		sock.settimeout(self.timeout)
+		self.socket = sock
+		if self.scramble:
+			data = sock.recv(12)
+			sock.send(scramble(data.decode('utf-8')).encode('utf-8'))
+		self.thread = threading.Thread(target = self.on_msg,args = (sock,))
+		self.thread.setDaemon(True)
+		self.thread.start()
+	def on_msg(self,sock):
+		logging.info("Listening for server messages.")
+		self.run = True
+		self.on_connect()
+		while self.run:
+			try:
+				data = sock.recv(LEN_OF_HEADER)
+				if data == b'':
+					self.run = False
+					continue
+				body_len = get_size_of_msg(data)
+				body = b''
+				if body_len != 0:
+					while body_len > 0:
+						if body_len > MAX_LEN_OF_RECV:
+							body += sock.recv(MAX_LEN_OF_RECV)
+							body_len -= MAX_LEN_OF_RECV
+						else:
+							body += sock.recv(body_len)
+							body_len = 0
+				msg = Message()
+				msg.unpack(data + body)
+				if msg.type in self.type_callbacks.keys():
+					self.type_callbacks[msg.type](msg)
+				else:
+					self.run = False
+					raise Exception("Type: %s isnt defined in the callbacks" % msg.type)
+			except timeout:
+				continue
+			except Exception as e:
+				logging.info(e)
+				self.run = False
+				self.on_disconnect()
+				if self.raise_exceptions:
+					raise e
+				break
+		self.run = False
+		sock.close()
+	def send_to_server(self,msg: Message):
+		self.socket.send(msg.pack())
+	def disconnect(self):
+		self.run = False
+	def active(self):
+		return self.run
+	def set_type_callback(self,type: str,callback):
+		self.type_callbacks[type] = callback
+	def join_all_threads(self):
+		self.thread.join()
+
+
+
+
+
+class Server:
+	def __init__(self,host_name,port,on_connect,on_disconnect,n_connections = None,timeout = 1):
 		self.connections = []
 		self.run = False
 		self.connection_id = 0
 		self.raise_exceptions = False
+		self.host_name = host_name
+		self.port = port
+		self.n_connections = n_connections
+		self.timeout = timeout
+		self.on_connect = on_connect
+		self.on_disconnect = on_disconnect
+		self.scramble = True
+		self.type_callbacks = {}
 		format = "%(asctime)s: %(message)s"
 		logging.basicConfig(format=format,level=logging.INFO,datefmt='%H:%M:%S')
-	def start_server(self,host_name,port,callback,n_connections = None,timeout = 5):
+	def start(self):
 		logging.info("Starting server...")
 		sock = socket.socket()
-		server_addr = (host_name,port)
-		sock.settimeout(timeout)
+		server_addr = (self.host_name,self.port)
+		sock.settimeout(self.timeout)
 		sock.bind(server_addr)
-		sock.listen(n_connections)
+		if self.n_connections == None:
+			sock.listen()
+		else:
+			sock.listen(self.n_connections)
 		self.server_thread = threading.Thread(target = self.listen_for_connections, args = (sock,))
 		self.server_thread.setDaemon(True)
-		self.server_callback = callback
-		self.timeout = timeout
-		self.millis = []
 		self.server_thread.start()
 	def listen_for_connections(self,socket):
 		self.run = True
@@ -33,16 +185,24 @@ class ConnectionManager:
 		while self.run:
 			try:
 				conn,addr = socket.accept()
-				logging.info("Connection Found.")
+				t = int(round(time.time() * 1000))
+				t = hex(t)
+				t = t[-10:]# last ten
+				if self.scramble:
+					conn.send(t.encode('utf-8'))
+					data = conn.recv(12)
+					data = data.decode('utf-8')
+					if(data != scramble(t)):
+						conn.close()
+						return
+				logging.info("Connection Found [" + str(addr) + "].")
 				self.connections.append({})
 				self.connections[self.connection_id]["address"] = addr
-				self.connections[self.connection_id]["thread"] = threading.Thread(target = self.on_client_msg,args = (conn,self.connection_id))
+				self.connections[self.connection_id]["thread"] = threading.Thread(target = self.on_msg,args = (conn,self.connection_id))
 				self.connections[self.connection_id]["thread"].setDaemon(True)
-				self.connections[self.connection_id]["thread"].start()
 				self.connections[self.connection_id]["socket"] = conn
-				self.connections[self.connection_id]["msgs"] = []
-				self.connections[self.connection_id]["ping"] = 999
-				self.millis.append(0) 
+				self.connections[self.connection_id]["active"] = True
+				self.connections[self.connection_id]["thread"].start()
 				self.connection_id += 1
 			except timeout:
 				continue
@@ -54,111 +214,56 @@ class ConnectionManager:
 		logging.info("Server Stopped.")
 		self.run = False
 		socket.close()
-	def on_client_msg(self,connection,id):
+	def on_msg(self,connection,id):
 		ping_sent = False
 		connection.settimeout(self.timeout)
-		self.millis[id] = int(round(time.time()*1000))
-		self.connections[id]["active"] = True
-		running_msg = b''
+		self.on_connect(id)
 		while self.run and self.connections[id]["active"]:
 			try:
-				data = connection.recv(1024)
-				data = running_msg + data
-				running_msg = b''
-				msgs = data.split(end_of_msg_word)
-				for i in range(len(msgs)):
-					if msgs[i] == b'':
-						continue
-					if msgs[i] == b'pong':
-						ping_sent = False
-						cur_millis = int(round(time.time()*1000))
-						self.connections[id]["ping"] = cur_millis - self.millis[id]
-						logging.info("Leg between server and " + str(id) + ":" + str(cur_millis - self.millis[id]))
-					else:
-						if (i == (len(msgs) - 1)):
-							running_msg = msgs[i]
-						else: 
-							self.server_callback(msgs[i],id)
-			except timeout:
-				if ping_sent:
+				data = connection.recv(LEN_OF_HEADER)
+				if data == b'':
 					self.connections[id]["active"] = False
-					logging.info("Shutting down connection to " + str(id))
+					continue
+				body_len = get_size_of_msg(data)
+				body = b''
+				if body_len != 0:
+					while body_len > 0:
+						if body_len > MAX_LEN_OF_RECV:
+							body += connection.recv(MAX_LEN_OF_RECV)
+							body_len -= MAX_LEN_OF_RECV
+						else:
+							body += connection.recv(body_len)
+							body_len = 0
+				msg = Message()
+				msg.unpack(data + body)
+				if msg.type in self.type_callbacks.keys():
+					self.type_callbacks[msg.type](msg,id)
 				else:
-					logging.info("Sending Ping To " + str(id))
-					self.millis[id] = int(round(time.time()*1000))
-					connection.send(b'ping' + b'\n>>>>')
-					ping_sent = True
+					self.run = False
+					raise Exception("Type: %s isnt defined in the callbacks" % msg.type)
+			except timeout:
+				continue
 			except Exception as e:
 				logging.info(e)
 				self.connections[id]["active"] = False
+				self.on_disconnect(id)
 				if self.raise_exceptions:
 					raise e
 		self.connections[id]["active"] = False
 		connection.close()
-	def send_to_client(self,msg,id):
-		if msg.find(end_of_msg_word) != -1:
-			raise Exception(msg.decode('utf-8') + " contains end of msg string: " + end_of_msg_word.decode('utf-8'))
-		if msg in special_words:
-			raise Exception(msg.decode('utf-8') + " is a special word")
-		self.connections[id]["socket"].send(msg + end_of_msg_word)
+		self.on_disconnect(id)
+	def set_type_callback(self,type: str,callback):
+		self.type_callbacks[type] = callback
+	def send_to_client(self,msg: Message,id: int):
+		self.connections[id]["socket"].send(msg.pack())
 	def send_to_all_clients(self,msg):
 		for i in range(len(self.connections)):
 			if self.connections[i]["active"]:
 				self.send_to_client(msg,i)
-	def connect_to_server(self,address,port,callback,timeout = 5):
-		sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-		server_addr = (address,port)
-		sock.connect(server_addr)
-		self.client_callback = callback
-		self.client_socket = sock
-		sock.settimeout(timeout)
-		self.client_thread = threading.Thread(target = self.on_server_msg,args = (sock,))
-		self.client_thread.setDaemon(True)
-		self.client_thread.start()
-	def on_server_msg(self,sock):
-		logging.info("Listening for server messages.")
-		self.run = True
-		self.client_sock_active = True
-		running_msg = b''
-		while self.run and self.client_sock_active:
-			try:
-				data = sock.recv(1024)
-				data = running_msg + data
-				running_msg = b''
-				msgs = data.split(end_of_msg_word)
-				for i in range(len(msgs)):
-					if msgs[i] == b'':
-						continue
-					if msgs[i] == b'ping':
-						logging.info("Sending Pong To Server")
-						sock.send(b'pong' + end_of_msg_word)
-					else:
-						if (i == (len(msgs) - 1)):
-							running_msg = msgs[i]
-						else: 
-							self.client_callback(msgs[i])
-			except timeout:
-				continue
-			except Exception as e:
-				self.client_sock_active = False
-				logging.info(e)
-				if self.raise_exceptions:
-					raise e
-		self.client_sock_active = False
-		sock.close()
-	def send_to_server(self,msg):
-		if msg.find(end_of_msg_word) != -1:
-			raise Exception(msg.decode('utf-8') + " contains end of msg string: " + end_of_msg_word.decode('utf-8'))
-		if msg in special_words:
-			raise Exception(msg.decode('utf-8') + " is a special word")
-		self.client_socket.send(msg + end_of_msg_word)
 	def disconnect(self):
 		self.run = False
-		self.client_sock_active = False
 		for i in range(len(self.connections)):
 			self.connections[i]["active"] = False
-	def client_socket_active(self):
-		return self.client_sock_active
 	def server_still_listening(self):
 		return self.run
 	def get_active_clients(self):
@@ -167,23 +272,15 @@ class ConnectionManager:
 			if self.connections[i]["active"]:
 				out.append(i)
 		return out
-	def join_all_threads(self):
-		self.disconnect()
-		if hasattr(self,"client_thread") and self.client_thread.isAlive():
-			self.client_thread.join()
-		for i in range(len(self.connections)):
-			if self.connections[i]["thread"].isAlive():
-				self.connections[i]["thread"].join()
-	def change_client_callback(self,callback):
-		self.client_callback = callback
-	def change_server_callback(self,callback):
-		self.server_callback = callback
+	def active(self):
+		return self.run
 	def get_connection(self,id):
 		return self.connections[id]
 	def disconnect_client(self,id):
 		logging.info("Stopping Connection to " + str(id))
 		self.connections[id]["active"] = False
-	def ping_all(self):
-		for con in self.connections:
-			if con["active"]:
-				con["socket"].send(b'ping' + end_of_msg_word)
+	def join_all_threads(self):
+		self.server_thread.join()
+		for i in range(len(self.connections)):
+			self.connections[i]["thread"].join()
+

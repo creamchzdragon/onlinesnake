@@ -4,6 +4,7 @@ import pygame
 import ConnectionManager
 import json
 import logging
+import time
 SCREEN_HEIGHT = 480
 SCREEN_WIDTH = 480
 GRID_SQUARE_PIXELS = 20
@@ -19,8 +20,18 @@ hieght_mult = pygame.math.Vector2(0, 12)
 starting_points = [base_starting_point , base_starting_point + width_mult , base_starting_point + hieght_mult , base_starting_point + width_mult + hieght_mult]
 used_player_colors = []
 starting_dirs = ["up","down","left","right"]
-man = ConnectionManager.ConnectionManager()
-man.raise_exceptions = True
+def on_server_connection(id):
+	pass
+def on_server_disconnect(id):
+	pass
+def on_client_connect():
+	pass
+def on_client_disconnect():
+	pass
+server = ConnectionManager.Server('',50000,on_server_connection,on_server_disconnect)
+client = ConnectionManager.Client('localhost',50000,on_client_connect,on_client_disconnect)
+server.raise_exceptions = True
+client.raise_exceptions = True
 #can use pygame.math.Vector2
 up = pygame.math.Vector2(0,-1)
 down = pygame.math.Vector2(0,1)
@@ -527,16 +538,11 @@ def game_scene_loop(screen,clock):
 	main_menu_scene_loop(screen,clock)
 def accept_connection(msg,id):
 	global players
-	global man
-	msg = msg.decode('utf-8')
-	#check for join tag
-	if msg[:5] == "JOIN:" and len(players) < 4:
-		msg = msg[5:]
-		players.append({"name":msg,"conn_id":id,"color":get_player_color(),"ping":999})
-		man.send_to_client(b'ID:' + bytes(str(id),'utf-8'),id)
-		man.ping_all()
-	else:
-		man.disconnect_client(id)
+	global server
+	players.append({"name":msg.body,"conn_id":id,"color":get_player_color(),"ping":999})
+	res_msg = ConnectionManager.Message("IDEN",str(id))
+	server.send_to_client(res_msg,id)
+
 def render_players_in_lobby(players,surface,y_offset):
 	text_font = pygame.font.SysFont("monospace",36)
 	cnt = 0
@@ -550,42 +556,59 @@ def render_players_in_lobby(players,surface,y_offset):
 		cnt += 1
 def check_on_players():
 	global players
-	global man
+	global server
 	remove = []
 	for player in players:
 		if player["conn_id"] == -1:
 			continue
-		connection = man.get_connection(player["conn_id"])
+		connection = server.get_connection(player["conn_id"])
 		if not connection["active"]:
 			remove.append(player)
-		else:
-			player["ping"] = connection["ping"]
 	for r in remove:
 		remove_used_color(r["color"])
 		players.remove(r)
 def send_update():
 	global players
-	global man
+	global server
 	players_string = json.dumps(players)
-	man.send_to_all_clients(b'UPDT:' + bytes(players_string,'utf-8'))
+	msg = ConnectionManager.Message("UPDT",players_string)
+	server.send_to_all_clients(msg)
+	for player in players:
+		player["last_ping"] = int(round(time.time() * 1000))
+	server.send_to_all_clients(ConnectionManager.Message("PING",""))
 def start_game():
 	global players
-	global man
+	global server
 	for i in range(len(players)):
 		players[i]["pos"] = [[starting_points[i].x,starting_points[i].y]]
 		players[i]["dir"] = random.choice(starting_dirs)
 		players[i]["alive"] = True
 	msg = {"players":players,"food": [GRID_WIDTH / 2,GRID_HEIGHT / 2]}
 	msg = json.dumps(msg)
-	man.change_server_callback(game_server_callback)
-	man.send_to_all_clients(b'STRT:' + bytes(msg,'utf-8'))
+	msg = ConnectionManager.Message("STRT",msg)
+	server.send_to_all_clients(msg)
+def on_ping(msg):
+	global client
+	client.send_to_server(ConnectionManager.Message("PONG",""))
+def on_pong(msg,id):
+	global server
+	global players
+	for player in players:
+		if player["conn_id"] == id:
+			player["ping"] = int(round(time.time() * 1000)) - player["last_ping"]
+			break
 def lobby_loop(screen,clock,name):
 	global players
-	global man
+	global server
+	global used_player_colors
+	used_player_colors = []
 	players = []
 	player = {"name":name,"conn_id":-1,"color":"green","ping":0}#me!
 	players.append(player)
-	man.start_server('',50000,accept_connection,3)
+	server.set_type_callback("JOIN",accept_connection)
+	server.set_type_callback("UPDT",game_server_callback)
+	server.set_type_callback("PONG",on_pong)
+	server.start()
 	surface = pygame.Surface(screen.get_size())
 	surface = surface.convert()
 	snake_font = pygame.font.SysFont("monospace",72)
@@ -600,7 +623,7 @@ def lobby_loop(screen,clock,name):
 		clock.tick(60)
 		for event in pygame.event.get():
 			if event.type == pygame.QUIT:
-				man.disconnect()
+				server.disconnect()
 				pygame.quit()
 				sys.exit()
 			if event.type == pygame.KEYDOWN:
@@ -614,7 +637,7 @@ def lobby_loop(screen,clock,name):
 					if menu_options[selected_menu_option] == "Start":
 						start = True
 					elif menu_options[selected_menu_option] == "Leave":
-						man.disconnect()
+						server.disconnect()
 						leave = True
 		if start or leave:
 			break
@@ -707,50 +730,47 @@ def enter_ip(screen,clock,in_name):
 		pygame.display.update()
 	if next_loop:
 		join_lobby_loop(screen,clock,in_name,name)
-def on_client_msg(msg):
-	global players
+def on_id_msg(msg):
 	global client_id
+	client_id = int(msg.body)
+def on_update_msg(msg):
+	global players
 	global start_game
 	global food
-	msg = msg.decode('utf-8')
-	if msg[:5] == "UPDT:":
-		if start_game:
-			msg = msg[5:]
-			msg = json.loads(msg)
-			players = msg["players"]
-			food = msg["food"]
-		else:
-			msg = msg[5:]
-			msg = json.loads(msg)
-			players = msg
-	elif msg[:3] == "ID:":
-		client_id = int(msg[3:])
-	elif msg[:5] == "STRT:":
-		msg = msg[5:]
-		msg = json.loads(msg)
+	msg = msg.body
+	msg = json.loads(msg)
+	if start_game:
 		players = msg["players"]
-		start_game = True
+		food = msg["food"]
+	else:
+		players = msg
+def on_start_msg(msg):
+	global players
+	global start_game
+	msg = json.loads(msg.body)
+	players = msg["players"]
+	start_game = True
 def game_server_callback(msg,id):
-	global man
+	global server
 	global players
 	global food
-	msg = msg.decode('utf-8')
-	if msg[:5] == "UPDT:":
-		msg = msg[5:]
-		msg = json.loads(msg)
-		for player in players:
-			if player["conn_id"] == id:
-				player["pos"] = msg["pos"]
-				player["dir"] = msg["dir"]
-				player["alive"] = msg["alive"]
-				break
-		rsp = {"players":players,"food":food}
-		rsp = json.dumps(rsp)
-		rsp = bytes(rsp,'utf-8')
-		man.send_to_all_clients(b'UPTD:' + rsp)
+	msg = msg.body
+	msg = json.loads(msg)
+	for player in players:
+		if player["conn_id"] == id:
+			player["pos"] = msg["pos"]
+			player["dir"] = msg["dir"]
+			player["alive"] = msg["alive"]
+			break
+	rsp = {"players":players,"food":food}
+	rsp = json.dumps(rsp)
+	rsp = ConnectionManager.Message("UPDT",rsp)
+	server.send_to_all_clients(rsp)
+#update for server/client
 def online_game_loop(screen,clock,is_server):
 	global players
-	global man
+	global server
+	global client
 	global food
 	global client_id
 	surface = pygame.Surface(screen.get_size())
@@ -810,8 +830,8 @@ def online_game_loop(screen,clock,is_server):
 						food = local_food.get_pos_as_array()
 						msg = {"players":players,"food":food}
 						msg = json.dumps(msg)
-						msg = bytes(msg,'utf-8')
-						man.send_to_all_clients(b'UPDT:' + msg)
+						msg = ConnectionManager.Message("UPDT",msg)
+						server.send_to_all_clients(msg)
 		if(game_over):
 			game = myfont.render("Game",1,(255,255,255))
 			over = myfont.render("Over",1,(255,255,255))
@@ -833,25 +853,35 @@ def online_game_loop(screen,clock,is_server):
 				players[0]["dir"] = snakes[0].get_dir_as_string()
 				msg = {"players":players,"food":food}
 				msg = json.dumps(msg)
-				msg = bytes(msg,'utf-8')
-				man.send_to_all_clients(b'UPDT:' + msg)
+				msg = ConnectionManager.Message("UPDT",msg)
+				server.send_to_all_clients(msg)
 			else:
 				msg = {"pos":snakes[0].get_pos_as_array(),"dir":snakes[0].get_dir_as_string(),"alive":(not game_over)}
 				msg = json.dumps(msg)
-				msg = bytes(msg,'utf-8')
-				man.send_to_server(b'UPDT:' + msg)
+				msg = ConnectionManager.Message("UPDT",msg)
+				client.send_to_server(msg)
 		tick += 1
 		pygame.display.update()
-	man.disconnect()
-	man.join_all_threads()
+	if is_server:
+		server.disconnect()
+		server.join_all_threads()
+	else:
+		client.disconnect()
+		client.join_all_threads()
 	main_menu_scene_loop(screen,clock)
 def join_lobby_loop(screen,clock,name,ip):
-	global man
+	global client
 	global players
 	global start_game
+	client.set_type_callback("IDEN",on_id_msg)
+	client.set_type_callback("UPDT",on_update_msg)
+	client.set_type_callback("STRT",on_start_msg)
+	client.set_type_callback("PING",on_ping)
 	try:
-		man.connect_to_server(ip,50000,on_client_msg)
-		man.send_to_server(b'JOIN:' + bytes(name,'utf-8'))
+		client.disconnect()
+		client.connect()
+		msg = ConnectionManager.Message("JOIN",name)
+		client.send_to_server(msg)
 	except:
 		main_menu_scene_loop(screen,clock)
 	players = []
@@ -868,17 +898,17 @@ def join_lobby_loop(screen,clock,name,ip):
 		clock.tick(60)
 		for event in pygame.event.get():
 			if event.type == pygame.QUIT:
-				man.disconnect()
+				client.disconnect()
 				pygame.quit()
 				sys.exit()
 			if event.type == pygame.KEYDOWN:
 				if event.key == pygame.K_RETURN:
 					if menu_options[selected_menu_option] == "Leave":
-						man.disconnect()
+						client.disconnect()
 						leave = True
 		if leave or start_game:
 			break
-		if man.client_sock_active == False:
+		if client.active() == False:
 			leave = True
 		surface.fill((0,0,0))
 		surface.blit(snake_text,snake_text_rect)
