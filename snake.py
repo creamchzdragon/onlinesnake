@@ -28,7 +28,9 @@ def on_client_connect():
 	pass
 def on_client_disconnect():
 	pass
-server = ConnectionManager.Server('',50000,on_server_connection,on_server_disconnect)
+def on_verification():
+	pass
+server = ConnectionManager.Server('',50000,on_server_connection,on_verification,on_server_disconnect)
 client = ConnectionManager.Client('localhost',50000,on_client_connect,on_client_disconnect)
 server.raise_exceptions = True
 client.raise_exceptions = True
@@ -672,7 +674,7 @@ def enter_name(screen,clock,after_loop):
 				sys.exit()
 			if event.type == pygame.KEYDOWN:
 				if event.key >= pygame.K_a and event.key <= pygame.K_z:
-					if len(name) < 13:
+					if len(name) < 20:
 						name += pygame.key.name(event.key)
 				elif event.key == pygame.K_BACKSPACE:
 					if len(name) > 0:
@@ -710,7 +712,7 @@ def enter_ip(screen,clock,in_name):
 				if ((event.key >= pygame.K_a and event.key <= pygame.K_z) or
 						(event.key >= pygame.K_0 and event.key <= pygame.K_9) or 
 							(event.key == pygame.K_PERIOD)):
-					if len(name) < 13:
+					if len(name) < 20:
 						name += pygame.key.name(event.key)
 				elif event.key == pygame.K_BACKSPACE:
 					if len(name) > 0:
