@@ -20,15 +20,15 @@ hieght_mult = pygame.math.Vector2(0, 12)
 starting_points = [base_starting_point , base_starting_point + width_mult , base_starting_point + hieght_mult , base_starting_point + width_mult + hieght_mult]
 used_player_colors = []
 starting_dirs = ["up","down","left","right"]
-def on_server_connection(id):
-	pass
+def on_server_connection(conn,addr):
+	return True
 def on_server_disconnect(id):
 	pass
 def on_client_connect():
 	pass
 def on_client_disconnect():
 	pass
-def on_verification():
+def on_verification(temp):
 	pass
 server = ConnectionManager.Server('',50000,on_server_connection,on_verification,on_server_disconnect)
 client = ConnectionManager.Client('localhost',50000,on_client_connect,on_client_disconnect)
